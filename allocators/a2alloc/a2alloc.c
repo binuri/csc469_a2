@@ -20,16 +20,18 @@ typedef struct sb {
     size_t size_class;
 
     int free_slots;
+    int total_slots;
     slot_t *slots;
 
+    pthread_mutex_t lock; // Used when freeing blocks
     struct sb *next;
 
 } superblock_t;
 
 
 typedef struct {
-    int total_bytes;
-    int allocated_bytes;
+    int total_size;
+    int allocated_size;
     pthread_mutex_t lock;
     superblock_t *sized_blocks[10];
 } heap_t;
@@ -117,7 +119,7 @@ void initialize_slots(superblock_t *block, size_t size_class_index, int total_sl
 /*
  * Given a tid, heap_id and a size class, create an empty superblock with
  * maximum possible slots for the given size_class and with zero slots
- * allocated.
+ * allocated.//
  */
 superblock_t *create_new_superblock(int tid, int heap_id, int size_class_index){
     superblock_t *new_block = (superblock_t *) mem_sbrk(mem_pagesize());
@@ -132,8 +134,14 @@ superblock_t *create_new_superblock(int tid, int heap_id, int size_class_index){
     int total_slots = (pagesize - size_of_struct) /
                         (new_block->size_class + alignSize(sizeof(slot_t)));
 
+    // setup data about the data slots that will be given out
     new_block->free_slots = total_slots;
+    new_block->total_slots = total_slots;
     initialize_slots(new_block, size_class_index, total_slots);
+
+     pthread_mutexattr_t sb_lock;
+     pthread_mutexattr_init(&sb_lock);
+     pthread_mutex_init(&(new_block->lock), &sb_lock);
 
     return new_block;
 }
@@ -151,9 +159,28 @@ superblock_t *find_superblock_from_global_heap(int tid, int heap_id, int size_cl
         global_heap->sized_blocks[size_class_index] = free_block->next;
         set_superblock_properties(free_block, tid, heap_id, size_class_index);
     }
+
+    
     pthread_mutex_unlock(&(global_heap->lock));
 
     return free_block;
+}
+
+void transfer_superblock_size_stats(int from_heapid, int to_heapid, superblock_t *block_transferred){
+
+    if (block_transferred != NULL){
+        size_t total_allocated_size_of_superblock = block_transferred->size_class * 
+                                (block_transferred->total_slots - block_transferred->free_slots);
+
+        heap_t *from_heap = heaps + from_heapid;
+        from_heap->allocated_size -= total_allocated_size_of_superblock;
+        from_heap->total_size -= block_transferred->total_slots * block_transferred->size_class;
+
+        heap_t *to_heap = heaps + to_heapid;
+        to_heap->allocated_size += total_allocated_size_of_superblock;
+        to_heap->total_size += block_transferred->total_slots * block_transferred->size_class;
+    }
+
 }
 
 
@@ -182,9 +209,17 @@ superblock_t *find_free_block(heap_t *heap, int tid, int heap_id, int size_class
                 if (free_block == NULL){
                     if (verbose)
                         printf("Could not find block in global heap either so creating new supoerblock.\n");
+
+                    // Create  a new superblock and update the heap's total used space count
+                    // Heap's allocated space count is not updated since free block newly created
                     free_block = create_new_superblock(tid, heap_id, size_class_index);
+                    heap->total_size += free_block->size_class * free_block->total_slots;
+                } else {
+                    // Subtract superblock stats from global heap and add to current heap
+                    transfer_superblock_size_stats(0, heap_id, free_block);
                 }
 
+                // Add the free block to the current heap
                 free_block->next = heap->sized_blocks[size_class_index];
                 heap->sized_blocks[size_class_index] = free_block;
 
@@ -199,8 +234,16 @@ superblock_t *find_free_block(heap_t *heap, int tid, int heap_id, int size_class
 
         // If a free block is still not found, then allocate a new block
         if (free_block == NULL){
+            // Create  a new superblock and update the heap's total used space count
+            // Heap's allocated space count is not updated since free block newly created
             free_block = create_new_superblock(tid, heap_id, size_class_index);
+            heap->total_size += free_block->size_class * free_block->total_slots;            
+                
+        } else {
+            // Subtract superblock stats from global heap and add to current heap
+            transfer_superblock_size_stats(0, heap_id, free_block);
         }
+
         heap->sized_blocks[size_class_index] = free_block;
 
     }
@@ -235,8 +278,12 @@ void *mm_malloc(size_t sz)
     // Now we have a free block whose first slot has memory
     slot_t *free_slot = free_block->slots;
 
+    // Update the supreblock to indicate that a single data slot will be allocated
     free_block->slots = free_slot->next;
     free_block->free_slots = free_block->free_slots - 1;
+
+    // Update the heap to indicate that a block of data is allocated
+    heap->allocated_size += free_block->size_class;
 
     pthread_mutex_unlock(&(heap->lock));
 
@@ -245,9 +292,54 @@ void *mm_malloc(size_t sz)
     return (void*)((char *)free_slot + sizeof(slot_t));
 }
 
+
+/* 
+ * Transfer a block that is msot empty from the heap with heap_id to the global
+ * heap
+ */
+void transfer_mostly_empty_superblock_to_global_heap(int heap_id){
+
+
+}
+
 void mm_free(void *ptr)
 {
-    (void)ptr; /* Avoid warning about unused variable */
+    
+    // Find the superblock that the freed block belongs to
+    superblock_t *sb =  (superblock_t *)(((uintptr_t)ptr - ((uintptr_t)ptr % mem_pagesize())) / mem_pagesize());
+    
+    // Get the lock superblock and then the heap to which it belongs to
+    pthread_mutex_lock(&(sb->lock));
+
+    heap_t *heap = heaps + sb->heap_id + 1;
+    pthread_mutex_lock(&(heap->lock));
+    
+    // Deallocate the block from the superblock
+    slot_t *deallocated_block = (slot_t *)((char *)ptr - sizeof(slot_t));
+    deallocated_block->next = sb->slots;
+    sb->slots = deallocated_block;
+
+    // update the superblock slot count
+    sb->free_slots += 1;
+    
+    // Update the heap data
+    heap->allocated_size -= sb->size_class;
+
+    // If the superblock is not in the global heap, then we have to see if superblocks
+    // from the heap can be transferred to the global heap    
+    if (sb->heap_id != 0){
+        // If 7/8ths of the heaps blocks are not in use and has more than 9
+        // superblocks worth of free memeory on the heap
+        if (heap->allocated_size < heap->total_size - (9 * mem_pagesize()) && 
+            heap->allocated_size < (0.125 * heap->total_size)){
+            transfer_mostly_empty_superblock_to_global_heap(sb->heap_id);
+        }
+    }
+
+    
+    pthread_mutex_unlock(&(heap->lock));
+    pthread_mutex_unlock(&(sb->lock));
+
 }
 
 
