@@ -37,8 +37,8 @@ typedef struct {
 } heap_t;
 
 /* *** VARIABLES NEEDED *** */
-extern heap_t *heaps = NULL;
-extern heap_t *global_heap = NULL;
+heap_t *heaps = NULL;
+heap_t *global_heap = NULL;
 int verbose = 1;
 
 
