@@ -6,6 +6,7 @@
 #include "mm_thread.h"
 #include "memlib.h"
 
+#define PAGE_ALIGN(p)    ((void *)(((unsigned long)(p) / mem_pagesize()) * mem_pagesize()))
 
 
 /* *** DATA STRUCTURES USED *** */
@@ -25,6 +26,7 @@ typedef struct sb {
 
     pthread_mutex_t lock; // Used when freeing blocks
     struct sb *next;
+    struct sb *prev;
 
 } superblock_t;
 
@@ -94,6 +96,7 @@ void set_superblock_properties(superblock_t *sb, int tid, int heap_id, int size_
     sb->size_class = get_power_of(2, (3 + size_class_index));
 
     sb->next = NULL;
+    sb->prev = NULL;
 }
 
 /*
@@ -164,6 +167,8 @@ superblock_t *find_superblock_from_global_heap(int tid, int heap_id, int size_cl
 
     if (free_block != NULL){
         global_heap->sized_blocks[size_class_index] = free_block->next;
+        if (free_block->next != NULL)
+            free_block->next->prev = NULL;
         set_superblock_properties(free_block, tid, heap_id, size_class_index);
     }
 
@@ -174,10 +179,10 @@ superblock_t *find_superblock_from_global_heap(int tid, int heap_id, int size_cl
 }
 
 void transfer_superblock_size_stats(int from_heapid, int to_heapid, superblock_t *block_transferred){
-
     if (block_transferred != NULL){
         size_t total_allocated_size_of_superblock = block_transferred->size_class * 
                                 (block_transferred->total_slots - block_transferred->free_slots);
+
 
         heap_t *from_heap = heaps + from_heapid;
         from_heap->allocated_size -= total_allocated_size_of_superblock;
@@ -228,6 +233,9 @@ superblock_t *find_free_block(heap_t *heap, int tid, int heap_id, int size_class
 
                 // Add the free block to the current heap
                 free_block->next = heap->sized_blocks[size_class_index];
+                if (free_block->next != NULL){
+                    free_block->next->prev = free_block;
+                }
                 heap->sized_blocks[size_class_index] = free_block;
 
             } else {
@@ -270,10 +278,10 @@ void *mm_malloc(size_t sz)
 
     // Use the current thread to get the heap to be used
     int tid = getTID();
-    int heap_id = tid % getNumProcessors();
+    int heap_id = (tid % getNumProcessors()) + 1;
 
     // +1 Since heap[0] is global heap
-    heap_t *heap = heaps + heap_id + 1;
+    heap_t *heap = heaps + heap_id;
     pthread_mutex_lock(&(heap->lock));
 
     int size_class_index = find_size_class_index(sz);
@@ -314,12 +322,12 @@ void mm_free(void *ptr)
 {
     
     // Find the superblock that the freed block belongs to
-    superblock_t *sb =  (superblock_t *)(((uintptr_t)ptr - ((uintptr_t)ptr % mem_pagesize())) / mem_pagesize());
+    superblock_t *sb =  (superblock_t *)(PAGE_ALIGN(ptr));
     
     // Get the lock superblock and then the heap to which it belongs to
     pthread_mutex_lock(&(sb->lock));
 
-    heap_t *heap = heaps + sb->heap_id + 1;
+    heap_t *heap = heaps + sb->heap_id;
     pthread_mutex_lock(&(heap->lock));
     
     // Deallocate the block from the superblock
@@ -335,13 +343,39 @@ void mm_free(void *ptr)
 
     // If the superblock is not in the global heap, then we have to see if superblocks
     // from the heap can be transferred to the global heap    
-    if (sb->heap_id != 0){
+    if (sb->heap_id != 0 && sb->tid == getTID()){
+        if (sb->free_slots == sb->total_slots){
+            
+            size_t size_class_i = find_size_class_index(sb->size_class);
+            
+            if (sb->prev == NULL){
+                heap->sized_blocks[size_class_i] = sb->next;
+            } else {
+                sb->prev->next = sb->next;
+            }
+    
+            if (sb->next != NULL){
+                sb->next->prev = sb->prev;
+            }
+
+            sb->prev = NULL;
+            sb->next = global_heap->sized_blocks[size_class_i];
+            if (sb->next != NULL){
+                sb->next->prev = sb;
+            }
+            global_heap->sized_blocks[size_class_i] = sb;
+            
+            transfer_superblock_size_stats(sb->heap_id, 0, sb);
+            
+
+        }    
+    
         // If 7/8ths of the heaps blocks are not in use and has more than 9
         // superblocks worth of free memeory on the heap
-        if (heap->allocated_size < heap->total_size - (9 * mem_pagesize()) && 
-            heap->allocated_size < (0.125 * heap->total_size)){
-            transfer_mostly_empty_superblock_to_global_heap(sb->heap_id);
-        }
+        //if (heap->allocated_size < heap->total_size - (9 * mem_pagesize()) && 
+        //    heap->allocated_size < (0.125 * heap->total_size)){
+        //    transfer_mostly_empty_superblock_to_global_heap(sb->heap_id);
+        //}
     }
 
     
@@ -399,7 +433,7 @@ int mm_init(void)
     return 0;
 }
 
-
+/*
 int main( int argc, const char* argv[] )
 {
     int i;
@@ -415,8 +449,8 @@ int main( int argc, const char* argv[] )
 
     // Brand new superblock must be created for sizeclass of 2 for
     // whichever heap.
-    int heapid = getTID() % getNumProcessors();
-    heap_t *heap = heaps + heapid + 1;
+    int heapid = (getTID() % getNumProcessors()) + 1;
+    heap_t *heap = heaps + heapid;
     printf ("TEST: Allocated 1 superblock to heap %d by thread %d\n", heapid, getTID());
     if (heap->sized_blocks[1]){
         superblock_t *sb = heap->sized_blocks[1];
@@ -426,6 +460,19 @@ int main( int argc, const char* argv[] )
     } else {
         printf ("ERROR: A superblock did not get allocated");
     }
+
+    mm_free(ptr);
+    printf ("TEST: Freed one slot in superblock to heap %d by thread %d\n", heapid, getTID());
+    if (heap->sized_blocks[1]){
+        superblock_t *sb = heap->sized_blocks[1];
+        printf("The total slots available in the superblock : %d\n", sb->total_slots);
+        printf ("Number of slots available after first allocation : %d\n", sb->free_slots);
+        printf("Heap id %d and tid %d with size class %zu\n", sb->heap_id, sb->tid, sb->size_class);
+    } else {
+        printf ("ERROR: A superblock did not get allocated");
+    }
+
+
 
    printf ("\nTEST: Allocating a slot from the same supoerblock to heap %d by thread %d \n", heapid, getTID());
     ptr = mm_malloc(16);
@@ -443,7 +490,7 @@ int main( int argc, const char* argv[] )
 
 
     int test_num = 0;
-    while (test_num < 7) {
+    while (test_num < 4) {
         printf ("\nTEST: Allocating a slot from the same supoerblock to heap %d by thread %d \n", heapid, getTID());
         ptr = mm_malloc(1000);
         if (heap->sized_blocks[7]){
@@ -459,8 +506,20 @@ int main( int argc, const char* argv[] )
         test_num ++;
     }
 
+    mm_free(ptr);
+    if (heap->sized_blocks[7]){
+            superblock_t *sb = heap->sized_blocks[7];
+            printf("\n\nAFTER_FREEEE-> HEAP total space available: %d\n", heap->total_size);
+            printf("HEAP allocated_space: %d\n", heap->allocated_size);
+            printf("Total number of slots available in the superblock : %d\n", sb->total_slots);
+            printf ("Number of slots available after first allocation : %d\n", sb->free_slots);
+            printf("Heap id %d and tid %d with size class %zu\n", sb->heap_id, sb->tid, sb->size_class);
+    } else {
+            printf ("ERROR: A superblock did not get allocated");
+    }
+
     printf("Number of pages heap after heapspace + 4 superblocks : %lu \n", ((uintptr_t)(void *)dseg_hi + 1 - (uintptr_t)(void *)dseg_lo)/mem_pagesize());
 
 
     return 0;
-}
+}*/
