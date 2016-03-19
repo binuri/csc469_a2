@@ -37,8 +37,8 @@ typedef struct {
 } heap_t;
 
 /* *** VARIABLES NEEDED *** */
-static heap_t *heaps = NULL;
-static heap_t *global_heap = NULL;
+extern heap_t *heaps = NULL;
+extern heap_t *global_heap = NULL;
 int verbose = 1;
 
 
@@ -102,18 +102,25 @@ void set_superblock_properties(superblock_t *sb, int tid, int heap_id, int size_
  */
 void initialize_slots(superblock_t *block, size_t size_class_index, int total_slots){
 
-    int slot;
     size_t size_class = get_power_of(2, (3 + size_class_index));
     size_t space = alignSize(sizeof(slot_t)) + size_class;
 
-    block->slots = (slot_t *)((char*)block + space);
-    slot_t *curr_slot = block->slots;
-    for (slot = 0; slot < total_slots - 1; slot++){
-        curr_slot->next = (slot_t *)((char *)curr_slot + space);
-        curr_slot = curr_slot->next;
-    }
 
-    curr_slot->next = NULL;
+    slot_t *slot = (slot_t *)((char *)block + alignSize(sizeof(superblock_t)));
+    block->slots = slot;
+
+    
+    int curr_slot = 0;
+    while(curr_slot <  (total_slots - 1)){
+        slot->next = (slot_t *)((char *)slot + space);
+        slot = slot->next;
+        curr_slot ++;
+    }
+    slot->next = NULL;
+    
+    
+
+
 }
 
 /*
@@ -199,7 +206,7 @@ superblock_t *find_free_block(heap_t *heap, int tid, int heap_id, int size_class
 
         // Scan heap's list of superblocks
         while (free_block->tid != tid || free_block->free_slots == 0){
-
+            printf("Iterating through the free blocks\n");
             // If heap does not have a sufficient superblock, search global heap
             if (free_block->next == NULL) {
                 if (verbose)
@@ -280,6 +287,7 @@ void *mm_malloc(size_t sz)
 
     // Update the supreblock to indicate that a single data slot will be allocated
     free_block->slots = free_slot->next;
+
     free_block->free_slots = free_block->free_slots - 1;
 
     // Update the heap to indicate that a block of data is allocated
@@ -374,6 +382,9 @@ int mm_init(void)
 
             pthread_mutex_init(&(heap->lock), &mta);
 
+            heap->total_size = 0;
+            heap->allocated_size = 0;
+
             int block_id;
             for (block_id = 0; block_id < 10; block_id++){
 
@@ -400,6 +411,7 @@ int main( int argc, const char* argv[] )
 
     mm_init();
     void *ptr = mm_malloc(16);
+    printf("The location of the malloced ptr : %ld\n", (uintptr_t)ptr);
 
     // Brand new superblock must be created for sizeclass of 2 for
     // whichever heap.
@@ -408,6 +420,7 @@ int main( int argc, const char* argv[] )
     printf ("TEST: Allocated 1 superblock to heap %d by thread %d\n", heapid, getTID());
     if (heap->sized_blocks[1]){
         superblock_t *sb = heap->sized_blocks[1];
+        printf("The total slots available in the superblock : %d\n", sb->total_slots);
         printf ("Number of slots available after first allocation : %d\n", sb->free_slots);
         printf("Heap id %d and tid %d with size class %zu\n", sb->heap_id, sb->tid, sb->size_class);
     } else {
@@ -418,6 +431,7 @@ int main( int argc, const char* argv[] )
     ptr = mm_malloc(16);
     if (heap->sized_blocks[1]){
         superblock_t *sb = heap->sized_blocks[1];
+        printf("Total slots available in teh superblock: %d\n", sb->total_slots);
         printf ("Number of slots available after first allocation : %d\n", sb->free_slots);
         printf("Heap id %d and tid %d with size class %zu\n", sb->heap_id, sb->tid, sb->size_class);
     } else {
@@ -434,6 +448,9 @@ int main( int argc, const char* argv[] )
         ptr = mm_malloc(1000);
         if (heap->sized_blocks[7]){
             superblock_t *sb = heap->sized_blocks[7];
+            printf("HEAP total space available: %d\n", heap->total_size);
+            printf("HEAP allocated_space: %d\n", heap->allocated_size);
+            printf("Total number of slots available in the superblock : %d\n", sb->total_slots);
             printf ("Number of slots available after first allocation : %d\n", sb->free_slots);
             printf("Heap id %d and tid %d with size class %zu\n", sb->heap_id, sb->tid, sb->size_class);
         } else {
