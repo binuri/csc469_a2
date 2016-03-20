@@ -10,6 +10,8 @@
 /* *** CONSTANTS *** */
 #define DEBUG 1            //set debug output ON/OFF
 #define TESTING
+#undef TESTING 
+
 
 name_t myname = {
      /* team name to be displayed on webpage */
@@ -30,7 +32,7 @@ name_t myname = {
 #define MINSLOTSIZE 8       //size of smallest superblock slot (2^MINSLOTSIZECLASS)
 #define NUMSLOTCLASS 8      //number of sizeclasses, max = 2^(3+8)= 2048bytes 
 #define F 0.125             //f, emptiness threshold
-#define K 9                 //K, min amount of superblocks before transfers to global heap
+#define K 2                 //K, min amount of superblocks before transfers to global heap
 
 //following two macros from provided memlib.c
 /* Align pointer to closest page boundary downwards */
@@ -152,6 +154,7 @@ inline superblock_t *getSuperblockFromGlobalHeap(int sizeclass)
     #if DEBUG
         printf("getSuperblockFromGlobalHeap: returning superblock %p from global \
             heap\n", sb);
+        sleep(5);
     #endif
 
     //unlock global heap
@@ -486,12 +489,15 @@ void mm_free(void *ptr)
     
     //check fullness level of heap and if appropriate, transfer most empty superblock 
     //to gobal heap. 
+    printf("(F %e * h->a_s %d < h->t_s %d) && (h->a_s %d < h->t_s %d- (K %d * p_s %d))\n",
+    F, heap->allocated_size, heap->total_size, heap->allocated_size, heap->total_size, K, page_size );
     if ((F * heap->allocated_size < heap->total_size) && 
         (heap->allocated_size < heap->total_size - (K * page_size))) 
     {
 
         #if DEBUG
             printf("mm_free: moving superblock to global heap\n");
+            sleep(5);
         #endif  
 
 
@@ -553,7 +559,6 @@ void mm_free(void *ptr)
 
         pthread_mutex_unlock(&(block->lock));
         pthread_mutex_unlock(&(global_heaps->lock));
-        printf("BYEBYEBYE\n");
 
     }
 
@@ -650,6 +655,47 @@ int main( int argc, const char* argv[] )
             printf ("ERROR: A superblock did not get allocated");
     }
     printf("Number of pages heap after heapspace + 4 superblocks : %lu \n", ((uintptr_t)(void *)dseg_hi + 1 - (uintptr_t)(void *)dseg_lo)/mem_pagesize());
+    
+
+
+    printf("Number of pages heap after heapspace + 1 superblocks : %locku \n", ((uintptr_t)(void *)dseg_hi + 1 - (uintptr_t)(void *)dseg_lo)/mem_pagesize());
+    test_num = 0;
+    while (test_num < 10) {
+        printf ("\nTEST: Allocating a slot from the same supoerblock to heap %d by thread %d \n", heapid, getTID());
+        ptr[test_num] = mm_malloc(1000);
+        if (heap->superblock[7]){
+            superblock_t *sb = heap->superblock[7];
+            printf("HEAP total space available: %d\n", heap->total_size);
+            printf("HEAP allocated_space: %d\n", heap->allocated_size);
+            printf("Total number of slots available in the superblock : %d\n", sb->total_slots);
+            printf ("Number of slots available after first allocation : %d\n", sb->free_slots);
+            printf("Heap id %d and tid %d with size class %u\n", sb->heap_id, sb->tid, sb->size_class);
+        } else {
+            printf ("ERROR: A superblock did not get allocated");
+        }
+        test_num ++;
+    }
+
+    test_num = 0;
+
+    while (test_num<10)
+    {
+     mm_free(ptr[test_num]); 
+     test_num++;
+    }
+    
+    if (heap->superblock[7]){
+            superblock_t *sb = heap->superblock[7];
+            printf("\n\nAFTER_FREEEE-> HEAP total space available: %d\n", heap->total_size);
+            printf("HEAP allocated_space: %d\n", heap->allocated_size);
+            printf("Total number of slots available in the superblock : %d\n", sb->total_slots);
+            printf ("Number of slots available after first allocation : %d\n", sb->free_slots);
+            printf("Heap id %d and tid %d with size class %u\n", sb->heap_id, sb->tid, sb->size_class);
+    } else {
+            printf ("ERROR: A superblock did not get allocated");
+    }
+    printf("Number of pages heap after heapspace + 4 superblocks : %lu \n", ((uintptr_t)(void *)dseg_hi + 1 - (uintptr_t)(void *)dseg_lo)/mem_pagesize());
+
     return 0;
 }
 #endif
