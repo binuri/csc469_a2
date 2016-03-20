@@ -453,9 +453,11 @@ void mm_free(void *ptr)
 
     pthread_mutex_lock(&(heap->lock));
 
-    //put freelist node at head of superblock freelist linked list to maintain LIFO ordering
     //TODO: There should be a check here to make sure that the pointer is aligned on 
     //a slot boundary such that a slot pointer is not created in the middle of a block 
+    //TODO: There should be a check that the node has not already been freed previously
+
+    //put freelist node at head of superblock freelist linked list to maintain LIFO ordering
     ((slot_t *) ptr)->next = sb->slots;
     sb->slots = (slot_t *) ptr;
 
