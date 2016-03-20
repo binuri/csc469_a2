@@ -8,10 +8,9 @@
 #include "malloc.h"
 
 /* *** CONSTANTS *** */
-#define DEBUG 1            //set debug output ON/OFF
+#define DEBUG   0         //set debug trace messages output ON/OFF
 #define TESTING
 #undef TESTING 
-
 
 name_t myname = {
      /* team name to be displayed on webpage */
@@ -154,7 +153,6 @@ inline superblock_t *getSuperblockFromGlobalHeap(int sizeclass)
     #if DEBUG
         printf("getSuperblockFromGlobalHeap: returning superblock %p from global \
             heap\n", sb);
-        sleep(5);
     #endif
 
     //unlock global heap
@@ -329,21 +327,16 @@ void *mm_malloc(size_t sz)
         #if DEBUG
             printf("mm_malloc: superblocks found in heap[%d] of sizeclass %d\n",heap_id,sizeclass);
         #endif
-        
-        int j = 0;
+
         while (block != NULL && (block->tid != tid || block->free_slots == 0))
         {
             assert(block->magic == MAGICNUM);
             
             #if DEBUG
-                printf("mm_malloc: block addr:%p, block->tid:%d, block->free_slots:%d, block->next: %p\n",block, block->tid, block->free_slots, block->next);
-                printf("j:%d",j);
+                printf("mm_malloc:scanning superblock addr:%p, block->tid:%d, block->free_slots:%d, block->next: %p\n",block, block->tid, block->free_slots, block->next);
             #endif
             
             block = block->next;
-            j++;
-
-            if (j>10) exit(1);
         }
     }
 
@@ -357,6 +350,7 @@ void *mm_malloc(size_t sz)
             printf("mm_malloc: no blocks for tid with free slots found, checking global heap\n");
         #endif
 
+        //check global heap for superblocks
         block = getSuperblockFromGlobalHeap(sizeclass);
 
         //If there are no global heap superblocks avaiable then allocate memory
@@ -380,11 +374,15 @@ void *mm_malloc(size_t sz)
             pthread_mutexattr_init(&sb_lock);
             pthread_mutex_init(&(block->lock), &sb_lock);
 
-            printf("new clock of sizeclass %d and total_slots %d\n", sizeclass, block->total_slots);
+            #if DEBUG
+                printf("mm_malloc: created new block of sizeclass %d and total_slots %d\n", sizeclass, block->total_slots);
+            #endif
+
             //initialize free slots linked list
             initialize_slots(block);
         }
 
+        //update block info
         block->heap_id = heap_id;
         block->tid = tid;
 
@@ -392,7 +390,7 @@ void *mm_malloc(size_t sz)
     } else 
     {
         #if DEBUG
-            printf("mm_malloc: superblock @ %p with heap_id: %d, tid:%d, size_class:%d \
+            printf("mm_malloc: existing superblock @ %p with heap_id: %d, tid:%d, size_class:%d \
                 freeslot:%d, firstslot@%p\n", block, block->heap_id, block->tid, 
                 block->size_class, block->free_slots, block->slots);
         #endif
@@ -426,6 +424,7 @@ void *mm_malloc(size_t sz)
     vaddr_t *ptr= (void *) block->slots;
     block->slots = block->slots->next;
 
+    //update block and heap stats
     block->free_slots -= 1;
     heap->allocated_size += block->size_class;
 
@@ -486,18 +485,20 @@ void mm_free(void *ptr)
         return;
     }
 
-    
+
+    #if DEBUG
+        printf("(F %e * h->a_s %d < h->t_s %d) && (h->a_s %d < h->t_s %d- (K %d * p_s %d))\n", 
+            F, heap->allocated_size, heap->total_size, heap->allocated_size, heap->total_size, K, page_size );
+    #endif
+        
     //check fullness level of heap and if appropriate, transfer most empty superblock 
     //to gobal heap. 
-    printf("(F %e * h->a_s %d < h->t_s %d) && (h->a_s %d < h->t_s %d- (K %d * p_s %d))\n",
-    F, heap->allocated_size, heap->total_size, heap->allocated_size, heap->total_size, K, page_size );
     if ((F * heap->allocated_size < heap->total_size) && 
         (heap->allocated_size < heap->total_size - (K * page_size))) 
     {
 
         #if DEBUG
             printf("mm_free: moving superblock to global heap\n");
-            sleep(5);
         #endif  
 
 
