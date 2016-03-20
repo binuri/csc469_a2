@@ -8,6 +8,7 @@
 #include "malloc.h"
 
 /* *** CONSTANTS *** */
+#define DEBUG 0             //set debug output ON/OFF
 
 name_t myname = {
      /* team name to be displayed on webpage */
@@ -27,7 +28,8 @@ name_t myname = {
 #define MINSLOTSIZECLASS 3  //min sizeclass 2^3 = 8bytes;
 #define MINSLOTSIZE 8       //size of smallest superblock slot (2^MINSLOTSIZECLASS)
 #define NUMSLOTCLASS 8      //number of sizeclasses, max = 2^(3+8)= 2048bytes 
-#define DEBUG 0             //set debug output ON/OFF
+#define F 0.125             //f, emptiness threshold
+#define K 9                 //K, min amount of superblocks before transfers to global heap
 
 //following two macros from provided memlib.c
 /* Align pointer to closest page boundary downwards */
@@ -143,6 +145,9 @@ inline superblock_t *getSuperblockFromGlobalHeap(int sizeclass)
     if (sb != NULL) {
         heap->superblock[sizeclass] = sb->next;
     }
+
+    //TODO: if there is no superblock, check last superblock sizeclass for empty 
+    //superblocks, repurpose them for new sizeclass and initialize slots. 
 
     if (DEBUG)
     {
@@ -347,6 +352,11 @@ void *mm_malloc(size_t sz)
             block->size_class = MINSLOTSIZE << (sizeclass);
             block->total_slots = (page_size - sizeof(superblock_t)) / block->size_class;
             block->free_slots = block->total_slots;
+            
+            pthread_mutexattr_t sb_lock;
+            pthread_mutexattr_init(&sb_lock);
+            pthread_mutex_init(&(block->lock), &sb_lock);
+
             printf("new clock of sizeclass %d and total_slots %d\n", sizeclass, block->total_slots);
             //initialize free slots linked list
             initialize_slots(block);
@@ -375,6 +385,9 @@ void *mm_malloc(size_t sz)
             }
         }
     }
+
+    //TODO:Place new block in linked list according to fullness
+    //TODO:promote order of existing block up if more full that predecessor node
 
     //place block at head of superblock linked list for heap maintaining LIFO ordering
     if (block != heap->superblock[sizeclass])
@@ -407,10 +420,10 @@ void mm_free(void *ptr)
         return;
     }
 
-    //get superblock from beginning of page
+    //get superblock from beginning of page and lock 
     superblock_t *sb = PAGE_ALIGN(ptr);
-
     assert(sb->magic == MAGICNUM);
+    pthread_mutex_lock(&(sb->lock));
 
     //extract heap_id and get pointer to head and lock it
     int heap_id = sb->heap_id;
@@ -420,14 +433,83 @@ void mm_free(void *ptr)
     pthread_mutex_lock(&(heap->lock));
 
     //put freelist node at head of superblock freelist linked list to maintain LIFO ordering
+    //TODO: There should be a check here to make sure that the pointer is aligned on 
+    //a slot boundary such that a slot pointer is not created in the middle of a block 
     ((slot_t *) ptr)->next = sb->slots;
     sb->slots = (slot_t *) ptr;
 
+    //update heap and superblock stats
     sb->free_slots += 1;
     heap->allocated_size -= sb->size_class;
 
-    //unlock heap and return
-    pthread_mutex_unlock(&(heap->lock));
+    
+    //TODO: if free from global node && empty, move to heap[0]->superblock[NUMSLOTCLASS-1];
+    
+
+    pthread_mutex_unlock(&(sb->lock));
+    if (heap_id == 0)
+    {
+        pthread_mutex_unlock(&(heap->lock));    
+        return;
+    }
+
+    //TODO: demote superblock down linked list base on its "fullness"
+    
+    //check fullness level of heap and if appropriate, transfer most empty superblock 
+    //to gobal heap. 
+    if ((F * heap->allocated_size < heap->total_size) && 
+        (heap->allocated_size < heap->total_size - (K * page_size))) 
+    {
+        //find emptiest superblock to transfer to global heap
+        //since superblocks arranged according to fullness in each size group
+        //this will be the last one. 
+        superblock_t *block = sb;
+        
+        while (block->next != NULL) {
+            block = block->next;
+        }
+
+        //block is representing the least full superblock in the heap
+        //as of right now it's limited to least full superblock of the sizegroup
+        //that was freed above
+        pthread_mutex_lock(&(block->lock));
+
+        int sizeclass;
+        //if the block is completley empty, store it in the least used (largest)
+        //size class so that it may be reassigned to any heap and size class
+        if (block->free_slots == block->total_slots) 
+        {
+            sizeclass = getSizeClass(block->size_class);
+        } else
+        {
+            sizeclass = NUMSLOTCLASS-1;
+        }
+
+        //lock global heap and transfer block to global heap in corresponding size group
+        pthread_mutex_lock(&(global_heaps->lock));
+        if (block->prev) block->prev->next = NULL;  //block is the last one in its linked list
+                                                    //set the second last to now be the last
+
+        block->heap_id = 0;
+        block->tid = 0;
+
+        //place block on global heap linked list for appropriate sizeclass
+        block->prev = NULL;
+        global_heaps->superblock[sizeclass]->prev = block;
+        block->next = global_heaps->superblock[sizeclass];
+        global_heaps->superblock[sizeclass] = block;
+
+
+        pthread_mutex_unlock(&(block->lock));
+        pthread_mutex_unlock(&(global_heaps->lock));
+
+    }
+
+
+
+
+    //unlock heap and superblock and return
+    pthread_mutex_unlock(&(heap->lock));    
     return;
 }
 
