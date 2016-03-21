@@ -213,6 +213,8 @@ inline void demote_superblock(superblock_t *sb)
             next->prev = sb->prev;
             if (sb->prev) sb->prev->next = next;
             if (next->next) next->next->prev = sb;
+            next->next = sb;
+            sb->prev = next;
         }
     }
     return;
