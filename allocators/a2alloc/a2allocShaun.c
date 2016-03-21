@@ -52,7 +52,7 @@ typedef struct __superblock_t {
     int tid;            //thread id of owning thread
     int size_class;     //size of slots in superblock
     int free_slots;     //number of remaining unused slots 
-    int total_slots;    //total slots available in superblock (pagesize/2^size_class)
+    int total_slots;    //total slots available in superblock (page_size/2^size_class)
 
     struct __slot_t *slots;     //pointer to head of linked list to free slots (LIFO ordering)
     struct __superblock_t *next, *prev;     //pointer to next and prev superblocks (doubly linked list)
@@ -246,14 +246,14 @@ int mm_init(void)
     assert(global_heaps == dseg_lo);
 
     #if DEBUG
-        printf("mm_init: initialized memory @%p; numProcessors=%d; pageSize=%d \
+        printf("mm_init: initialized memory @%p; numProcessors=%d; page_size=%d \
             sizeof(heap_t):%lu; sizeof(superblock_t):%lu \n", 
             (void *)global_heaps, numProcessors, page_size, sizeof(heap_t), sizeof(superblock_t));
     #endif
     
 
     //initialize heap datastuctures and locks
-    int i;
+    int i;pagesize
     for(i = 0; i <= numProcessors + 1; i++){
         heap_t *heap = global_heaps + i;
 
